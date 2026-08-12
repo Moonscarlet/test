@@ -1,0 +1,115 @@
+
+;~ $num = _OCR("F:\Downloads\image.png")
+$num = _OCR("F:\Downloads\firefox_3qEvbb5SlD.png")
+ConsoleWrite('@@ Debug(' & @ScriptLineNumber & ') : $num = ' & $num & @CRLF & '>Error code: ' & @error & @CRLF) ;### Debug Console
+
+
+#include <Constants.au3> ; Required for $STDOUT_CHILD
+
+; ==========================================
+; FUNCTION: _OCR (Updated: Groq -> Gemini -> OpenRouter)
+; ==========================================
+Func _OCR($sImgPath)
+    Local $sBase64Image = _FileToBase64($sImgPath)
+    If $sBase64Image = "" Then Return ""
+
+    Local $sExtractedNumber = ""
+    Local $bSuccess = False
+
+    ; --- CONFIG ---
+    Local $sGroqApiKey = "asd"
+;~     Local $sGroqModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+    Local $sGroqModel = "qwen/qwen3.6-27b#"
+
+    Local $sGeminiApiKey = "qd"
+;~     Local $sGeminiModel = "gemini-3-flash-preview" ; Ensure this is a supported version
+;~     Local $sGeminiModel = "gemini-2.5-flash-lite" ; Ensure this is a supported version
+    Local $aGeminiModels[5] = ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.5-flash", "gemini-3-flash-preview"]
+
+    Local $sOpenRouterApiKey = "sdfs"
+    Local $sOpenRouterModel = "nvidia/nemotron-nano-12b-v2-vl:free"
+
+    While $sExtractedNumber = ""
+        Local $oHTTP = ObjCreate("WinHttp.WinHttpRequest.5.1")
+
+        ; ==========================================================
+        ; 2. FALLBACK 1: GEMINI API
+        ; ==========================================================
+        If $sExtractedNumber = "" Then
+            ConsoleWrite("Groq failed. Trying Gemini..." & @CRLF)
+
+            For $i = 0 To UBound($aGeminiModels) - 1
+                Local $sCurrentModel = $aGeminiModels[$i]
+                ConsoleWrite("Trying Gemini model: " & $sCurrentModel & @CRLF)
+
+                $oHTTP.Open("POST", "https://generativelanguage.googleapis.com/v1beta/models/" & $sCurrentModel & ":generateContent?key=" & $sGeminiApiKey, False)
+                $oHTTP.SetRequestHeader("Content-Type", "application/json")
+;~                 $oHTTP.Send('{"contents":[{"parts":[{"inlineData": {"mimeType": "image/jpeg", "data": "' & $sBase64Image & '"}}, {"text": "Extract the number. Output only the number."}]}]}')
+                $oHTTP.Send('{"contents":[{"parts":[{"inlineData": {"mimeType": "image/jpeg", "data": "' & $sBase64Image & '"}}, {"text": "Extract the text Output only the text"}]}]}')
+
+                ConsoleWrite('@@ Debug(' & @ScriptLineNumber & ') : $oHTTP.ResponseText = ' & $oHTTP.ResponseText & @CRLF & '>Error code: ' & @error & @CRLF) ;### Debug Console
+
+                If $oHTTP.Status = 200 Then
+                    Local $aMatch = StringRegExp($oHTTP.ResponseText, '"text":\s*"(.*?)"', 1)
+                    If Not @error Then
+                        $sExtractedNumber = StringStripWS(StringReplace($aMatch[0], "\n", ""), 3)
+                        If $sExtractedNumber <> "" Then ExitLoop ; Found a number, exit the model array loop
+                    EndIf
+                EndIf
+            Next
+        EndIf
+
+
+        ; ==========================================================
+        ; 1. PRIMARY: GROQ API
+        ; ==========================================================
+        ConsoleWrite("Trying Groq..." & @CRLF)
+        $oHTTP.Open("POST", "https://api.groq.com/openai/v1/chat/completions", False)
+        $oHTTP.SetRequestHeader("Authorization", "Bearer " & $sGroqApiKey)
+        $oHTTP.SetRequestHeader("Content-Type", "application/json")
+;~         ;$oHTTP.Send('{"model": "' & $sGroqModel & '", "temperature": 0, "messages": [{"role": "system", "content": "Extract the number. Output only the number."}, {"role": "user", "content": [{"type": "text", "text": "Extract number."}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,' & $sBase64Image & '"}}]}]}')
+        $oHTTP.Send('{"model": "' & $sGroqModel & '", "temperature": 0, "messages": [{"role": "system", "content": "Extract the text Output only the text"}, {"role": "user", "content": [{"type": "text", "text": "Extract number."}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,' & $sBase64Image & '"}}]}]}')
+
+
+        If $oHTTP.Status = 200 Then
+            Local $aMatch = StringRegExp($oHTTP.ResponseText, '"content":\s*"(.*?)"', 1)
+            If Not @error Then $sExtractedNumber = StringStripWS($aMatch[0], 3)
+		EndIf
+
+        ; ==========================================================
+        ; 3. FALLBACK 2: OPENROUTER
+        ; ==========================================================
+        If $sExtractedNumber = "" Then
+            ConsoleWrite("Gemini failed. Trying OpenRouter..." & @CRLF)
+            $oHTTP.Open("POST", "https://openrouter.ai/api/v1/chat/completions", False)
+            $oHTTP.SetRequestHeader("Authorization", "Bearer " & $sOpenRouterApiKey)
+            $oHTTP.SetRequestHeader("Content-Type", "application/json")
+            $oHTTP.Send('{"model": "' & $sOpenRouterModel & '", "messages": [{"role": "user", "content":[{"type": "text", "text": "Extract only the number."}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,' & $sBase64Image & '"}}]}]}')
+
+            If $oHTTP.Status = 200 Then
+                Local $aMatch = StringRegExp($oHTTP.ResponseText, '"content":\s*"(.*?)"', 1)
+                If Not @error Then $sExtractedNumber = StringStripWS($aMatch[0], 3)
+            EndIf
+        EndIf
+
+        If $sExtractedNumber = "" Then
+            ConsoleWrite("All APIs failed. Retrying in 5 seconds..." & @CRLF)
+            Sleep(5000)
+        EndIf
+    WEnd
+
+    Return $sExtractedNumber
+EndFunc
+
+Func _FileToBase64($sFilePath)
+    Local $hFile = FileOpen($sFilePath, 16)
+    If $hFile = -1 Then Return ""
+    Local $bData = FileRead($hFile)
+    FileClose($hFile)
+
+    Local $oXml = ObjCreate("MSXML2.DOMDocument")
+    Local $oElement = $oXml.createElement("b64")
+    $oElement.dataType = "bin.base64"
+    $oElement.nodeTypedValue = $bData
+    Return StringReplace(StringReplace($oElement.text, @CR, ""), @LF, "")
+EndFunc
