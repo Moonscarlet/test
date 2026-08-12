@@ -1,95 +1,120 @@
+#include <Constants.au3>
 
-;~ $num = _OCR("F:\Downloads\image.png")
-$num = _OCR("F:\Downloads\firefox_3qEvbb5SlD.png")
-ConsoleWrite('@@ Debug(' & @ScriptLineNumber & ') : $num = ' & $num & @CRLF & '>Error code: ' & @error & @CRLF) ;### Debug Console
+; --- EXAMPLE 1: Passing Base64 string directly (from WebDriver) ---
+Local $sImgTagSrc = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+Local $num = _OCR($sImgTagSrc)
+ConsoleWrite('@@ Debug(' & @ScriptLineNumber & ') : $num = ' & $num & @CRLF)
 
+; --- EXAMPLE 2: Passing a file path still works as before ---
+; Local $num = _OCR("F:\Downloads\firefox_3qEvbb5SlD.png")
 
-#include <Constants.au3> ; Required for $STDOUT_CHILD
 
 ; ==========================================
-; FUNCTION: _OCR (Updated: Groq -> Gemini -> OpenRouter)
+; FUNCTION: _OCR (Supports both File Paths & Base64 Strings)
 ; ==========================================
-Func _OCR($sImgPath)
-    Local $sBase64Image = _FileToBase64($sImgPath)
-    If $sBase64Image = "" Then Return ""
+Func _OCR($sInput)
+    Local $sRawBase64 = ""
+    Local $sMimeType = "image/png" ; Default MIME type
+
+    ; --- 1. Check if $sInput is a file path or a Base64 string ---
+    If FileExists($sInput) Then
+        ; It's a file on disk
+        $sRawBase64 = _FileToBase64($sInput)
+        If StringRight($sInput, 4) = ".jpg" Or StringRight($sInput, 5) = ".jpeg" Then $sMimeType = "image/jpeg"
+    ElseIf StringInStr($sInput, "data:image/") Then
+        ; It's a Data URL from an <img> tag (e.g., "data:image/png;base64,iVBOR...")
+        Local $aParts = StringRegExp($sInput, "data:(image/\w+);base64,(.+)", 1)
+        If Not @error Then
+            $sMimeType = $aParts[0]
+            $sRawBase64 = $aParts[1]
+        Else
+            ; Fallback: strip header manually if regex missed
+            $sRawBase64 = StringTrimLeft($sInput, StringInStr($sInput, ","))
+        EndIf
+    Else
+        ; Assume it's already a raw Base64 string
+        $sRawBase64 = StringStripWS($sInput, 8)
+    EndIf
+
+    If $sRawBase64 = "" Then
+        ConsoleWrite("Error: Could not obtain Base64 data." & @CRLF)
+        Return ""
+    EndIf
+
+    ; Prepare formats needed for APIs
+    Local $sDataUrl = "data:" & $sMimeType & ";base64," & $sRawBase64
 
     Local $sExtractedNumber = ""
-    Local $bSuccess = False
+    Local $oHTTP = ObjCreate("WinHttp.WinHttpRequest.5.1")
 
     ; --- CONFIG ---
     Local $sGroqApiKey = "asd"
-;~     Local $sGroqModel = "meta-llama/llama-4-scout-17b-16e-instruct"
     Local $sGroqModel = "qwen/qwen3.6-27b#"
 
     Local $sGeminiApiKey = "qd"
-;~     Local $sGeminiModel = "gemini-3-flash-preview" ; Ensure this is a supported version
-;~     Local $sGeminiModel = "gemini-2.5-flash-lite" ; Ensure this is a supported version
     Local $aGeminiModels[5] = ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.5-flash", "gemini-3-flash-preview"]
 
     Local $sOpenRouterApiKey = "sdfs"
     Local $sOpenRouterModel = "nvidia/nemotron-nano-12b-v2-vl:free"
 
     While $sExtractedNumber = ""
-        Local $oHTTP = ObjCreate("WinHttp.WinHttpRequest.5.1")
 
         ; ==========================================================
-        ; 2. FALLBACK 1: GEMINI API
+        ; 1. GEMINI API (Requires RAW base64 without prefix)
         ; ==========================================================
-        If $sExtractedNumber = "" Then
-            ConsoleWrite("Groq failed. Trying Gemini..." & @CRLF)
+        ConsoleWrite("Trying Gemini..." & @CRLF)
+        For $i = 0 To UBound($aGeminiModels) - 1
+            Local $sCurrentModel = $aGeminiModels[$i]
+            ConsoleWrite("Trying Gemini model: " & $sCurrentModel & @CRLF)
 
-            For $i = 0 To UBound($aGeminiModels) - 1
-                Local $sCurrentModel = $aGeminiModels[$i]
-                ConsoleWrite("Trying Gemini model: " & $sCurrentModel & @CRLF)
+            $oHTTP.Open("POST", "https://generativelanguage.googleapis.com/v1beta/models/" & $sCurrentModel & ":generateContent?key=" & $sGeminiApiKey, False)
+            $oHTTP.SetRequestHeader("Content-Type", "application/json")
+            
+            ; Payload uses $sRawBase64 (NO data:image prefix)
+            $oHTTP.Send('{"contents":[{"parts":[{"inlineData": {"mimeType": "' & $sMimeType & '", "data": "' & $sRawBase64 & '"}}, {"text": "Extract the text. Output only the text"}]}]}')
 
-                $oHTTP.Open("POST", "https://generativelanguage.googleapis.com/v1beta/models/" & $sCurrentModel & ":generateContent?key=" & $sGeminiApiKey, False)
-                $oHTTP.SetRequestHeader("Content-Type", "application/json")
-;~                 $oHTTP.Send('{"contents":[{"parts":[{"inlineData": {"mimeType": "image/jpeg", "data": "' & $sBase64Image & '"}}, {"text": "Extract the number. Output only the number."}]}]}')
-                $oHTTP.Send('{"contents":[{"parts":[{"inlineData": {"mimeType": "image/jpeg", "data": "' & $sBase64Image & '"}}, {"text": "Extract the text Output only the text"}]}]}')
-
-                ConsoleWrite('@@ Debug(' & @ScriptLineNumber & ') : $oHTTP.ResponseText = ' & $oHTTP.ResponseText & @CRLF & '>Error code: ' & @error & @CRLF) ;### Debug Console
-
-                If $oHTTP.Status = 200 Then
-                    Local $aMatch = StringRegExp($oHTTP.ResponseText, '"text":\s*"(.*?)"', 1)
-                    If Not @error Then
-                        $sExtractedNumber = StringStripWS(StringReplace($aMatch[0], "\n", ""), 3)
-                        If $sExtractedNumber <> "" Then ExitLoop ; Found a number, exit the model array loop
-                    EndIf
+            If $oHTTP.Status = 200 Then
+                Local $aMatch = StringRegExp($oHTTP.ResponseText, '"text":\s*"(.*?)"', 1)
+                If Not @error Then
+                    $sExtractedNumber = StringStripWS(StringReplace($aMatch[0], "\n", ""), 3)
+                    If $sExtractedNumber <> "" Then ExitLoop
                 EndIf
-            Next
-        EndIf
+            EndIf
+        Next
 
+        If $sExtractedNumber <> "" Then ExitLoop
 
         ; ==========================================================
-        ; 1. PRIMARY: GROQ API
+        ; 2. GROQ API (Requires Data URL format)
         ; ==========================================================
         ConsoleWrite("Trying Groq..." & @CRLF)
         $oHTTP.Open("POST", "https://api.groq.com/openai/v1/chat/completions", False)
         $oHTTP.SetRequestHeader("Authorization", "Bearer " & $sGroqApiKey)
         $oHTTP.SetRequestHeader("Content-Type", "application/json")
-;~         ;$oHTTP.Send('{"model": "' & $sGroqModel & '", "temperature": 0, "messages": [{"role": "system", "content": "Extract the number. Output only the number."}, {"role": "user", "content": [{"type": "text", "text": "Extract number."}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,' & $sBase64Image & '"}}]}]}')
-        $oHTTP.Send('{"model": "' & $sGroqModel & '", "temperature": 0, "messages": [{"role": "system", "content": "Extract the text Output only the text"}, {"role": "user", "content": [{"type": "text", "text": "Extract number."}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,' & $sBase64Image & '"}}]}]}')
+        
+        ; Payload uses $sDataUrl ("data:image/...;base64,...")
+        $oHTTP.Send('{"model": "' & $sGroqModel & '", "temperature": 0, "messages": [{"role": "system", "content": "Extract the text. Output only the text"}, {"role": "user", "content": [{"type": "text", "text": "Extract number."}, {"type": "image_url", "image_url": {"url": "' & $sDataUrl & '"}}]}]}')
 
+        If $oHTTP.Status = 200 Then
+            Local $aMatch = StringRegExp($oHTTP.ResponseText, '"content":\s*"(.*?)"', 1)
+            If Not @error Then
+                $sExtractedNumber = StringStripWS($aMatch[0], 3)
+                If $sExtractedNumber <> "" Then ExitLoop
+            EndIf
+        EndIf
+
+        ; ==========================================================
+        ; 3. OPENROUTER API (Requires Data URL format)
+        ; ==========================================================
+        ConsoleWrite("Trying OpenRouter..." & @CRLF)
+        $oHTTP.Open("POST", "https://openrouter.ai/api/v1/chat/completions", False)
+        $oHTTP.SetRequestHeader("Authorization", "Bearer " & $sOpenRouterApiKey)
+        $oHTTP.SetRequestHeader("Content-Type", "application/json")
+        $oHTTP.Send('{"model": "' & $sOpenRouterModel & '", "messages": [{"role": "user", "content":[{"type": "text", "text": "Extract only the number."}, {"type": "image_url", "image_url": {"url": "' & $sDataUrl & '"}}]}]}')
 
         If $oHTTP.Status = 200 Then
             Local $aMatch = StringRegExp($oHTTP.ResponseText, '"content":\s*"(.*?)"', 1)
             If Not @error Then $sExtractedNumber = StringStripWS($aMatch[0], 3)
-		EndIf
-
-        ; ==========================================================
-        ; 3. FALLBACK 2: OPENROUTER
-        ; ==========================================================
-        If $sExtractedNumber = "" Then
-            ConsoleWrite("Gemini failed. Trying OpenRouter..." & @CRLF)
-            $oHTTP.Open("POST", "https://openrouter.ai/api/v1/chat/completions", False)
-            $oHTTP.SetRequestHeader("Authorization", "Bearer " & $sOpenRouterApiKey)
-            $oHTTP.SetRequestHeader("Content-Type", "application/json")
-            $oHTTP.Send('{"model": "' & $sOpenRouterModel & '", "messages": [{"role": "user", "content":[{"type": "text", "text": "Extract only the number."}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,' & $sBase64Image & '"}}]}]}')
-
-            If $oHTTP.Status = 200 Then
-                Local $aMatch = StringRegExp($oHTTP.ResponseText, '"content":\s*"(.*?)"', 1)
-                If Not @error Then $sExtractedNumber = StringStripWS($aMatch[0], 3)
-            EndIf
         EndIf
 
         If $sExtractedNumber = "" Then
