@@ -1,0 +1,57 @@
+Func SetupCapabilitiesChrome($bHeadless = False, $sUserDataDir = False, $sProfileDir = False)
+	; Path to Chrome User Data on Windows
+;~ 	Local $sUserDataDir = @LocalAppDataDir & "\Google\Chrome\User Data"
+;~ 	Local $sUserDataDir = "F:\Downloads\asd"
+;~ 	Local $sProfileDir = "Default" ; Change to "Profile 1", "Profile 2", etc. if you use multiple profiles
+
+	_WD_CapabilitiesStartup()
+	_WD_CapabilitiesAdd('alwaysMatch', 'chrome')
+	_WD_CapabilitiesAdd('excludeSwitches', 'enable-automation')
+;~ ; Disables the internal Blink flag that sets navigator.webdriver = true
+	_WD_CapabilitiesAdd('args', '--disable-blink-features=AutomationControlled')
+
+	If $bHeadless Then _WD_CapabilitiesAdd('args', '--headless')
+
+	; Load your existing Chrome profile
+	If $sUserDataDir And $sProfileDir Then
+		_WD_CapabilitiesAdd('args', '--user-data-dir=' & $sUserDataDir)
+		_WD_CapabilitiesAdd('args', '--profile-directory=' & $sProfileDir)
+	EndIf
+
+	_WD_CapabilitiesDump(@ScriptLineNumber) ; dump current Capabilities setting to console - only for testing in this demo
+	Local $sCapabilities = _WD_CapabilitiesGet()
+	Return $sCapabilities
+EndFunc   ;==>SetupCapabilitiesChrome
+
+
+
+;=======================================================OTHER SESSION===========================================================================
+$sSession2 = _WD_CreateSession(SetupCapabilitiesChrome(False, "F:\Downloads\asd", "Default"))
+$link = "https://messages.google.com/web/"
+$sender = "VF-App"
+$partofSMS = "Dear Customer, "
+
+_WD_Navigate($sSession2, $link)
+_WD_LoadWait($sSession2)
+While 1
+	$sElement = _WD_WaitElement($sSession2, $_WD_LOCATOR_ByXPath, "//a[@data-e2e-is-unread='true' and .//span[text()='" & $sender & "']]", 0, 3000)
+	If @error Then
+		_WD_Action($sSession2, "refresh")
+		_WD_LoadWait($sSession2)
+		While _WD_FindElement($sSession2, $_WD_LOCATOR_ByXPath, '//div[@class="bubble"]')
+			Sleep(1000)
+		WEnd
+	Else
+		ExitLoop
+	EndIf
+WEnd
+
+Do
+	_WD_ElementAction($sSession2, $sElement, 'click')
+Until Not @error
+
+$sElement = _WD_WaitElement($sSession2, $_WD_LOCATOR_ByXPath, "(//div[contains(normalize-space(), '" & $partofSMS & "')])[last()]", 0, 999999)
+$text = _WD_ElementAction($sSession2, $sElement, 'text')
+ConsoleWrite('@@ Debug(' & @ScriptLineNumber & ') : $text = ' & $text & @CRLF)  ;### Debug Console
+_WD_DeleteSession($sSession2)
+;===============================================================================================================================================
